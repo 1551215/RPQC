@@ -1,0 +1,103 @@
+{
+  "schema": "rpqc_named_predicate_workloads_v1",
+  "total_queries": 432,
+  "predicate_map": {
+    "file": "predicate-map.tsv",
+    "sha256": "4b1c53cdb2154ebaa43f047ea92ff61c51738a98bf0085acc5ad1af4cc490f4c",
+    "rows": 261
+  },
+  "core_source_commit": "9ae17d91a00ce41cbfcbcb0d05079fd633e27ea5",
+  "distributed_release_tag": "claude-ai",
+  "robustness_source": "Final 360-query workload used in completed GCNP robustness experiment; supplied 2026-11-06",
+  "predicate_notation": "Full RDF predicate IRIs in angle brackets; original operators and count bounds retained verbatim",
+  "files": [
+    {
+      "file": "core18/dbpedia.txt",
+      "dataset": "dbpedia",
+      "workload": "core18",
+      "query_count": 18,
+      "sha256": "14fbe47f0c406f59258642c6def7b77678fd0307a1a4f023998186b64015f839",
+      "numeric_source": "results/query-change/single-rhs-full-rerun-20261103/inputs/dbpedia/full-gcnp.txt",
+      "numeric_source_sha256": "e46ab29d2b5faa589f5f746308099359d30acace1d9e5bbe5d238e62bd2011ff",
+      "predicate_map_source": "data/OPattern/dbpedia/dbpedia_predicate_map.tsv",
+      "predicate_map_source_sha256": "323e451651966b925534a9a182e0e9110ab403d28389276230a4ea824995ea87"
+    },
+    {
+      "file": "robustness/dbpedia.txt",
+      "dataset": "dbpedia",
+      "workload": "robustness",
+      "query_count": 90,
+      "sha256": "2fdf41ca9c231543f1675c46640a6cc6cea274daedf6d3f287b2c9ae940a3d20",
+      "numeric_source": "RPQC/RDI/benchmarks/robustness-final360-inputs-20261106/dbpedia.txt",
+      "numeric_source_sha256": "94c8e589b1bed257af1c323a16a12fb2afdb15ed6d452305537934d0949262e7",
+      "predicate_map_source": "data/OPattern/dbpedia/dbpedia_predicate_map.tsv",
+      "predicate_map_source_sha256": "323e451651966b925534a9a182e0e9110ab403d28389276230a4ea824995ea87"
+    },
+    {
+      "file": "core18/yago253.txt",
+      "dataset": "yago253",
+      "workload": "core18",
+      "query_count": 18,
+      "sha256": "004d715f17d53eeb7473e5980c9fb868efbbaf3fbdbd4dcfb6456754f12ffea1",
+      "numeric_source": "results/query-change/single-rhs-full-rerun-20261103/inputs/yago253/full-gcnp.txt",
+      "numeric_source_sha256": "7e307f518505a77ea17805b1727bed0bd91322515cc27a1a30cb420b9b6fbe17",
+      "predicate_map_source": "data/OPattern/yago253/yago253_predicate_map.tsv",
+      "predicate_map_source_sha256": "bd77dec11fd783366c3ec96dda8017c30cb8b78502de7ef006de360a0aa4e9cc"
+    },
+    {
+      "file": "robustness/yago253.txt",
+      "dataset": "yago253",
+      "workload": "robustness",
+      "query_count": 90,
+      "sha256": "c31999b4ad1bc57524455e036650870c15ea9d9662fa9d19eaa3af0d91b215a6",
+      "numeric_source": "RPQC/RDI/benchmarks/robustness-final360-inputs-20261106/yago253.txt",
+      "numeric_source_sha256": "be6f5f280d1f1bb67288898cd33c9bbbfc73ea970a90dd1fd59cd0d01f298138",
+      "predicate_map_source": "data/OPattern/yago253/yago253_predicate_map.tsv",
+      "predicate_map_source_sha256": "bd77dec11fd783366c3ec96dda8017c30cb8b78502de7ef006de360a0aa4e9cc"
+    },
+    {
+      "file": "core18/sf1.txt",
+      "dataset": "sf1",
+      "workload": "core18",
+      "query_count": 18,
+      "sha256": "09606aa874c0d21d938ecf3c30a76d4edde04dc4911529b5e6ed0ee3c1c9b474",
+      "numeric_source": "results/query-change/single-rhs-full-rerun-20261103/inputs/sf1/full-gcnp.txt",
+      "numeric_source_sha256": "95063f1734b40760a98dfbc5d51dcafcfc4dfbe08145c77ce2a5740dfe7c23b6",
+      "predicate_map_source": "data/OPattern/sf1/sf1_predicate_map.tsv",
+      "predicate_map_source_sha256": "acd82287528d7e5053fc68cde59563bc19cbe9728e5613ed0de175001515ef6f"
+    },
+    {
+      "file": "robustness/sf1.txt",
+      "dataset": "sf1",
+      "workload": "robustness",
+      "query_count": 90,
+      "sha256": "bb3ce863da8283373a6d50a0565dc35ec69d36e9aa3677bd34c5f29dc10671d8",
+      "numeric_source": "RPQC/RDI/benchmarks/robustness-final360-inputs-20261106/sf1.txt",
+      "numeric_source_sha256": "7ff607d62046af09a4cdd94ef7f7d6572844d771ef8dc755e156144590417303",
+      "predicate_map_source": "data/OPattern/sf1/sf1_predicate_map.tsv",
+      "predicate_map_source_sha256": "acd82287528d7e5053fc68cde59563bc19cbe9728e5613ed0de175001515ef6f"
+    },
+    {
+      "file": "core18/sf3.txt",
+      "dataset": "sf3",
+      "workload": "core18",
+      "query_count": 18,
+      "sha256": "436aeb1cbddb6dc6c3fb182fe6c9a923bf76214a4417d6cc55626cccb69ed5a6",
+      "numeric_source": "results/query-change/single-rhs-full-rerun-20261103/inputs/sf3/full-gcnp.txt",
+      "numeric_source_sha256": "95063f1734b40760a98dfbc5d51dcafcfc4dfbe08145c77ce2a5740dfe7c23b6",
+      "predicate_map_source": "data/OPattern/sf3/sf3_predicate_map.tsv",
+      "predicate_map_source_sha256": "acd82287528d7e5053fc68cde59563bc19cbe9728e5613ed0de175001515ef6f"
+    },
+    {
+      "file": "robustness/sf3.txt",
+      "dataset": "sf3",
+      "workload": "robustness",
+      "query_count": 90,
+      "sha256": "6c230d89cd8fd556d827fb2b1e6d0a94ac0788793ff47744ec2f2d3269e8293e",
+      "numeric_source": "RPQC/RDI/benchmarks/robustness-final360-inputs-20261106/sf3.txt",
+      "numeric_source_sha256": "40ee548015c4b4e6565d72efe53ad9f9783bb424189416e54f280f64ba455055",
+      "predicate_map_source": "data/OPattern/sf3/sf3_predicate_map.tsv",
+      "predicate_map_source_sha256": "acd82287528d7e5053fc68cde59563bc19cbe9728e5613ed0de175001515ef6f"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+.ipynb_checkpoints/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.o
+*.log
+*.pid
+/results/
+/RDI/benchmarks/
+/RDI/rdi
+/RDI/rdi-*
+/distribute/benchmarks/
+/distribute/tests/
+/distribute/build/
+/distribute/build-*/
+/query_logs/
+/batch_summary.txt
