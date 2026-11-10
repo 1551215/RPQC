@@ -3669,6 +3669,45 @@ void Count_state::build_bounded_suffix_bitmap_rows_for_sources(
 		return;
 	}
 
+	const char* delta_mode = std::getenv("DUAL_STATE_DELTA_MODE");
+	const bool mirror_delta = delta_mode == nullptr ||
+		std::strcmp(delta_mode, "required_power") == 0;
+	const char* trace = std::getenv("DUAL_STATE_DELTA_TRACE");
+	const bool trace_delta = trace && std::strcmp(trace, "1") == 0;
+	struct DeltaSchedule {
+		size_t depth = 0;
+		unordered_set<int> required_powers;
+	};
+	static thread_local DeltaSchedule delta_schedule;
+	struct ScheduleScope {
+		DeltaSchedule* schedule;
+		explicit ScheduleScope(DeltaSchedule* value) : schedule(value) {
+			if (schedule) ++schedule->depth;
+		}
+		~ScheduleScope() {
+			if (schedule && --schedule->depth == 0) schedule->required_powers.clear();
+		}
+	} schedule_scope(mirror_delta ? &delta_schedule : nullptr);
+	if (mirror_delta && delta_schedule.depth == 1) {
+		// Only reuse exact powers already required by the mirror recurrence.
+		// S_len alone must not force construction of P_len.
+		unordered_set<int> visited_suffixes;
+		std::function<void(int)> require_power = [&](int power) {
+			if (!delta_schedule.required_powers.insert(power).second || power <= 1) return;
+			const auto parts = GetBinaryBasisSplit(power);
+			require_power(parts.first);
+			require_power(parts.second);
+		};
+		std::function<void(int)> visit_suffix = [&](int length) {
+			if (length <= 1 || !visited_suffixes.insert(length).second) return;
+			const auto parts = GetBinaryBasisSplit(length);
+			require_power(parts.second);
+			visit_suffix(parts.first);
+			visit_suffix(parts.second);
+		};
+		visit_suffix(len);
+	}
+
 	auto& cache_rows = bounded_suffix_bitmap_cache[len];
 	unordered_set<size_t> missing_sources;
 	for (size_t source : sources) {
@@ -3713,6 +3752,84 @@ void Count_state::build_bounded_suffix_bitmap_rows_for_sources(
 	if (left_len <= 0 || right_len <= 0) {
 		for (size_t source : missing_sources) {
 			cache_rows[source] = {};
+		}
+		return;
+	}
+
+	if (mirror_delta) {
+		// S includes I: S_(a+b) = S_b U S_a P_b. Both suffix requests
+		// keep the original sources; only exact powers expand into mid rows.
+		RoaringRelation suffix, left_suffix;
+		build_bounded_suffix_bitmap_rows_for_sources(
+			missing_sources, right_len, start_state, suffix);
+		build_bounded_suffix_bitmap_rows_for_sources(
+			missing_sources, left_len, start_state, left_suffix);
+		const bool reuse_power = delta_schedule.required_powers.count(len) != 0;
+		RoaringRelation exact, left_operand;
+		if (reuse_power) {
+			build_exact_bitmap_rows_for_sources(missing_sources, len, start_state, exact);
+			unordered_set<size_t> uncovered;
+			const auto& cached_left = exact_repetition_bitmap_cache[left_len];
+			for (size_t source : missing_sources) {
+				if (cached_left.find(source) == cached_left.end()) uncovered.insert(source);
+			}
+			if (!uncovered.empty()) {
+				RoaringRelation extra_rows;
+				build_exact_bitmap_rows_for_sources(uncovered, left_len, start_state, extra_rows);
+			}
+			const auto& left_power = exact_repetition_bitmap_cache[left_len];
+			for (const auto& [source, row] : left_suffix) {
+				const auto power = left_power.find(source);
+				if (power == left_power.end() || power->second.isEmpty()) {
+					left_operand.emplace(source, row);
+				} else {
+					auto difference = row - power->second;
+					if (!difference.isEmpty()) left_operand.emplace(source, std::move(difference));
+				}
+			}
+			RoaringUnionRelationInPlace(exact, suffix);
+		} else {
+			left_operand = std::move(left_suffix);
+		}
+		const auto right_sources = CollectDistinctRelationMids(left_operand);
+		RoaringRelation right_power;
+		build_exact_bitmap_rows_for_sources(right_sources, right_len, start_state, right_power);
+		BlpcComposeResult shifted;
+		if (!left_operand.empty() && !right_power.empty()) {
+			shifted = ComposeRoaringDetailed(left_operand, right_power);
+		}
+		RoaringUnionRelationInPlace(shifted.relation, suffix);
+		const string left_name = (reuse_power ? "D" : "S") + std::to_string(left_len);
+		const string right_name = "P" + std::to_string(right_len);
+		const auto left_stats = MeasureRoaringRelation(left_operand);
+		const auto right_stats = MeasureRoaringRelation(right_power);
+		const auto output_stats = MeasureRoaringRelation(shifted.relation);
+		RecordComposeStage(
+			"MIRROR_" + left_name + "_o_" + right_name + "_to_T" + std::to_string(len),
+			left_name, right_name, "T" + std::to_string(len),
+			left_stats.pairs, right_stats.pairs, output_stats.pairs,
+			left_stats.rows, right_stats.rows, output_stats.rows,
+			shifted.candidate_pairs, shifted.compose_time_ms,
+			shifted.stats.total_local_patterns, shifted.stats.distinct_local_patterns,
+			shifted.naive_union_work, shifted.stats.actual_union_work,
+			shifted.gcnp_planning_time_ms, shifted.relation_merge_time_ms);
+		const auto suffix_stats = MeasureRoaringRelation(suffix);
+		for (size_t source : missing_sources) {
+			SharedBitmapRow values;
+			auto row = suffix.find(source);
+			if (row != suffix.end()) values = row->second;
+			cache_rows[source] = values;
+			if (!values.isEmpty()) out_rows.emplace(source, std::move(values));
+		}
+		RecordMaterializedRelationStats("S" + std::to_string(len),
+			suffix_stats.pairs, suffix_stats.rows, suffix_stats.max_row);
+		if (trace_delta) {
+			AlgorithmPhaseTimer diagnostics(AlgorithmPhase::Diagnostics);
+			std::cout << "[DualStateMirror] length=" << len
+				<< " requested_sources=" << missing_sources.size()
+				<< " required_power=" << reuse_power
+				<< " left_pairs=" << left_stats.pairs
+				<< " right_sources=" << right_sources.size() << std::endl;
 		}
 		return;
 	}

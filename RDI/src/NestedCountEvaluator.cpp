@@ -17,6 +17,13 @@ using std::shared_ptr;
 
 namespace {
 
+bool use_mirror_bounded_suffix() {
+	const char* suffix = std::getenv("BOUNDED_SUFFIX_MODE");
+	if (suffix && std::strcmp(suffix, "dual_state") != 0) return false;
+	const char* mode = std::getenv("DUAL_STATE_DELTA_MODE");
+	return mode == nullptr || std::strcmp(mode, "required_power") == 0;
+}
+
 bool use_naive_bounded_suffix_union() {
 	const char* mode = std::getenv("BOUNDED_SUFFIX_MODE");
 	return mode != nullptr && std::strcmp(mode, "naive_union") == 0;
@@ -272,6 +279,60 @@ void NestedCountEvaluator::evaluate_bounded_stage(const shared_ptr<Regex>& body,
 	copy_cached_rows(cache.closure, sources, closure);
 }
 
+void NestedCountEvaluator::evaluate_mirror_bounded_suffix(
+	const shared_ptr<Regex>& body, int length, const VertexSet& sources,
+	const std::unordered_set<int>& required_powers, Relation& result) {
+	AlgorithmPhaseTimer phase(AlgorithmPhase::MP);
+	QueryPhaseTimer measurement(QueryTimingPhase::IncrementalCache);
+	result.clear();
+	if (length < 0 || sources.empty()) return;
+	RowCache& cache = bounded_cache_[StageKey{body.get(), length}].closure;
+	VertexSet missing;
+	for (size_t source : sources) {
+		if (!cache.computed_sources.count(source)) missing.insert(source);
+	}
+	if (!missing.empty()) {
+		Relation fresh;
+		if (length == 0) {
+			fresh = identity(missing);
+		} else if (length == 1) {
+			evaluate_exact(body, 1, missing, fresh);
+			merge(identity(missing), fresh, "mirror_bounded_identity");
+		} else {
+			const auto split = binary_split(length);
+			Relation left, right;
+			evaluate_mirror_bounded_suffix(body, split.first, missing, required_powers, left);
+			evaluate_mirror_bounded_suffix(body, split.second, missing, required_powers, right);
+			fresh = std::move(right);
+			if (required_powers.count(length)) {
+				Relation exact, left_power, delta;
+				evaluate_exact(body, length, missing, exact);
+				evaluate_exact(body, split.first, missing, left_power);
+				for (const auto& entry : left) {
+					auto p = left_power.find(entry.first);
+					auto row = p == left_power.end() ? entry.second
+						: entry.second - p->second;
+					if (!row.isEmpty()) delta.emplace(entry.first, std::move(row));
+				}
+				merge(exact, fresh, "mirror_bounded_reuse_power");
+				left = std::move(delta);
+			}
+			Relation right_power;
+			evaluate_exact(body, split.second, collect_destinations(left), right_power);
+			merge(compose(left, right_power), fresh,
+				"mirror_bounded_length_" + std::to_string(length));
+		}
+		for (size_t source : missing) {
+			cache.computed_sources.insert(source);
+			auto row = fresh.find(source);
+			if (row != fresh.end() && !row->second.isEmpty()) {
+				cache.rows[source] = std::move(row->second);
+			}
+		}
+	}
+	copy_cached_rows(cache, sources, result);
+}
+
 void NestedCountEvaluator::evaluate_range(const shared_ptr<Regex>& body,
 	int min_rep, int max_rep, const VertexSet& sources, Relation& result) {
 	AlgorithmPhaseTimer phase(AlgorithmPhase::MP);
@@ -303,6 +364,34 @@ void NestedCountEvaluator::evaluate_range(const shared_ptr<Regex>& body,
 			evaluate_exact(body, exact_len, suffix_sources, exact);
 			merge(exact, suffix, "naive_suffix_length_" + std::to_string(exact_len));
 		}
+		result = compose(prefix, suffix);
+		return;
+	}
+	if (use_mirror_bounded_suffix()) {
+		// Request only powers already needed by S_(a+b) = S_b union S_a P_b.
+		std::unordered_set<int> required_powers, visited;
+		auto require_power = [&](auto&& self, int length) -> void {
+			if (!required_powers.insert(length).second || length <= 1) return;
+			const auto parts = binary_split(length);
+			self(self, parts.first);
+			self(self, parts.second);
+		};
+		auto visit_suffix = [&](auto&& self, int length) -> void {
+			if (length <= 1 || !visited.insert(length).second) return;
+			const auto parts = binary_split(length);
+			require_power(require_power, parts.second);
+			self(self, parts.first);
+			self(self, parts.second);
+		};
+		visit_suffix(visit_suffix, max_rep - min_rep);
+		{
+			AlgorithmPhaseTimer diagnostics(AlgorithmPhase::Diagnostics);
+			std::cout << "[NestedCount][mirror] max_extra_len=" << max_rep - min_rep
+				<< " requested_sources=" << suffix_sources.size() << std::endl;
+		}
+		Relation suffix;
+		evaluate_mirror_bounded_suffix(body, max_rep - min_rep,
+			suffix_sources, required_powers, suffix);
 		result = compose(prefix, suffix);
 		return;
 	}

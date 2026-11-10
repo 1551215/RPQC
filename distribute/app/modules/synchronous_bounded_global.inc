@@ -228,7 +228,33 @@ static void IncrementalGlobalBuildBoundedStage(
     IncrementalWorkerState& state, int query_id, int body_id, int depth,
     RelationDstSet sources, bool need_power, uint64_t stage_key,
     IncrementalGlobalBoundedDone done,
-    shared_ptr<IncrementalCompleteBoundedCache> complete_cache = nullptr) {
+    shared_ptr<IncrementalCompleteBoundedCache> complete_cache = nullptr,
+    shared_ptr<const unordered_set<int>> required_powers = nullptr) {
+    if (!required_powers) {
+        auto required = make_shared<unordered_set<int>>();
+        unordered_set<int> visited;
+        function<void(int)> require_power = [&](int length) {
+            if (!required->insert(length).second || length <= 1) return;
+            const auto split = IncrementalExactBinarySplit(length);
+            require_power(split.first);
+            require_power(split.second);
+        };
+        function<void(int)> visit_suffix = [&](int length) {
+            if (length <= 1 || !visited.insert(length).second) return;
+            const auto split = IncrementalRangeAdditionSplit(length);
+            require_power(split.second);
+            visit_suffix(split.first);
+            visit_suffix(split.second);
+        };
+        visit_suffix(depth);
+        if (need_power) require_power(depth);
+        required_powers = std::move(required);
+    }
+    need_power = need_power || required_powers->count(depth) != 0;
+    if (!complete_cache) {
+        complete_cache = make_shared<IncrementalCompleteBoundedCache>();
+        complete_cache->sources = sources;
+    }
     if (complete_cache) {
         bool hit = false;
         IncrementalGlobalBoundedStage cached;
@@ -245,8 +271,8 @@ static void IncrementalGlobalBuildBoundedStage(
             done(std::move(cached));
             return;
         }
-        // Root-only cache: every entry covers the same complete owner-local
-        // body start domain, never just a previously requested mids frontier.
+        // Mirror suffixes always use this evaluation's original source domain.
+        // Exact powers expand mids separately, outside this suffix cache.
         sources = complete_cache->sources;
         done = [complete_cache, depth, continuation = std::move(done)](
             IncrementalGlobalBoundedStage result) mutable {
@@ -299,119 +325,116 @@ static void IncrementalGlobalBuildBoundedStage(
     }
 
     const auto split = IncrementalRangeAdditionSplit(depth);
+    RelationDstSet left_sources = sources;
     IncrementalGlobalBuildBoundedStage(
-        state, query_id, body_id, split.first, std::move(sources), true,
-        IncrementalGlobalBoundedChildKey(stage_key, 0x21),
-        [&state, query_id, body_id, split, need_power, stage_key, complete_cache,
-         done = std::move(done)](IncrementalGlobalBoundedStage left) mutable {
-            RelationDstSet mids = IncrementalBoundedCollectDestinations(state, query_id, left.power);
+        state, query_id, body_id, split.second, std::move(sources), false,
+        IncrementalGlobalBoundedChildKey(stage_key, 0x61),
+        [&state, query_id, body_id, depth, split, need_power, stage_key,
+         complete_cache, required_powers, sources = std::move(left_sources),
+         done = std::move(done)](IncrementalGlobalBoundedStage right) mutable {
+            RelationDstSet original_sources = sources;
             IncrementalGlobalBuildBoundedStage(
-                state, query_id, body_id, split.second, std::move(mids),
-                need_power, IncrementalGlobalBoundedChildKey(stage_key, 0x22),
-                [&state, query_id, body_id, split, need_power, stage_key,
-                 left = std::move(left), done = std::move(done)](
-                    IncrementalGlobalBoundedStage right) mutable {
-                    struct JoinContext {
-                        mutex mu;
-                        uint64_t pending = 0;
-                        RelationRows power;
-                        RelationRows shifted;
-                        RelationRows left_closure;
-                        shared_ptr<RelationRows> coverage_owner;
+                state, query_id, body_id, split.first, std::move(sources), false,
+                IncrementalGlobalBoundedChildKey(stage_key, 0x62),
+                [&state, query_id, body_id, depth, split, need_power, stage_key,
+                 sources = std::move(original_sources), right = std::move(right),
+                 done = std::move(done)](IncrementalGlobalBoundedStage left) mutable {
+                    struct MirrorContext {
+                        RelationRows power, closure, left, left_power;
                         IncrementalGlobalBoundedDone done;
                     };
-                    auto context = make_shared<JoinContext>();
-                    context->pending = need_power ? 2 : 1;
-                    context->left_closure = std::move(left.closure);
+                    auto context = make_shared<MirrorContext>();
+                    context->closure = std::move(right.closure);
+                    context->left = std::move(left.closure);
+                    if (need_power && !left.has_power)
+                        throw runtime_error("mirror schedule omitted a required left power");
+                    context->left_power = std::move(left.power);
                     context->done = std::move(done);
-                    const bool helper_restore = split.first == split.second &&
-                        IncrementalHelperClosureRestoreEnabled();
-                    auto finish = [&state, query_id, context, need_power, helper_restore]() mutable {
-                        IncrementalGlobalBoundedDone done;
-                        IncrementalGlobalBoundedStage result;
-                        {
-                            lock_guard<mutex> lk(context->mu);
-                            if (--context->pending != 0) return;
-                            auto begin = chrono::steady_clock::now();
-                            if (helper_restore) {
-                                const auto& prior = context->coverage_owner
-                                    ? *context->coverage_owner : context->left_closure;
-                                // Rows absent from P[a] never reached a helper. Keep
-                                // those exact original contributions on their owner.
-                                for (const auto& [source, values] : prior) {
-                                    if (context->shifted.find(source) == context->shifted.end())
-                                        context->shifted.emplace(source, values);
-                                }
-                                context->left_closure = std::move(context->shifted);
-                                context->coverage_owner.reset();
-                                IncrementalRecordBoundedOwnerTime(state, query_id, 1, begin);
-                            } else {
-                            if (context->coverage_owner) {
-                                // Move only after the last borrowed view is released.
-                                if (context->coverage_owner.unique())
-                                    context->left_closure = std::move(*context->coverage_owner);
-                                else context->left_closure = *context->coverage_owner;
-                                context->coverage_owner.reset();
-                            }
-                            IncrementalRecordBoundedOwnerTime(state, query_id, 2, begin);
-                            begin = chrono::steady_clock::now();
-                            if (IncrementalOwnerInputViewsEnabled())
-                                IncrementalMergeOwnedRows(context->left_closure, context->shifted);
-                            else IncrementalMergeRows(context->left_closure, context->shifted);
-                            IncrementalRecordBoundedOwnerTime(state, query_id, 1, begin);
-                            }
-                            result.power = std::move(context->power);
-                            result.closure = std::move(context->left_closure);
-                            result.has_power = need_power;
-                            done = std::move(context->done);
+                    auto compose_delta = [&state, query_id, body_id, depth, split,
+                                          need_power, stage_key, context]() mutable {
+                        if (IncrementalScalingTraceEnabled()) {
+                            cerr << "[bounded-mirror] worker=" << state.partition_id
+                                 << " query=" << query_id << " length=" << depth
+                                 << " required_power=" << need_power
+                                 << " left_pairs=" << CountRelationPairs(context->left)
+                                 << '\n';
                         }
-                        done(std::move(result));
+                        RelationDstSet mids = IncrementalBoundedCollectDestinations(
+                            state, query_id, context->left);
+                        // Even an empty local delta must participate in every
+                        // exact/compose stage so that other workers get seals.
+                        IncrementalGlobalBuildExactRelation(
+                            state, query_id, body_id, split.second, std::move(mids),
+                            IncrementalGlobalBoundedChildKey(stage_key, 0x65),
+                            [&state, query_id, body_id, split, need_power, stage_key,
+                             context](RelationRows rhs) mutable {
+                                const bool restore = split.first == split.second &&
+                                    IncrementalHelperClosureRestoreEnabled();
+                                auto left_owner = IncrementalOwnComposeInput(context->left);
+                                auto right_owner = IncrementalOwnComposeInput(rhs);
+                                auto coverage_owner = split.first == split.second
+                                    ? IncrementalOwnComposeInput(context->closure) : nullptr;
+                                const auto& lhs = left_owner ? *left_owner : context->left;
+                                const auto& right_rows = right_owner ? *right_owner : rhs;
+                                const RelationRows* coverage = split.first == split.second
+                                    ? (coverage_owner ? coverage_owner.get() : &context->closure)
+                                    : nullptr;
+                                IncrementalStartGlobalRelationCompose(
+                                    state, query_id, body_id,
+                                    IncrementalGlobalBoundedChildKey(stage_key, 0x66),
+                                    lhs, right_rows,
+                                    [&state, query_id, context, coverage_owner,
+                                     need_power, restore](RelationRows shifted) mutable {
+                                        const auto begin = chrono::steady_clock::now();
+                                        if (restore) {
+                                            const auto& prior = coverage_owner
+                                                ? *coverage_owner : context->closure;
+                                            // Sources absent from D_a (or S_a)
+                                            // never reached a helper. Retain their
+                                            // S_b and reused P_(a+b) contributions.
+                                            for (const auto& [source, values] : prior) {
+                                                if (shifted.find(source) == shifted.end())
+                                                    shifted.emplace(source, values);
+                                            }
+                                            context->closure = std::move(shifted);
+                                        } else {
+                                            if (coverage_owner)
+                                                context->closure = *coverage_owner;
+                                            IncrementalMergeOwnedRows(context->closure, shifted);
+                                        }
+                                        IncrementalRecordBoundedOwnerTime(state, query_id, 1, begin);
+                                        auto done = std::move(context->done);
+                                        done(IncrementalGlobalBoundedStage{
+                                            std::move(context->power), std::move(context->closure), need_power});
+                                    }, coverage, IncrementalComposeInputOwners{
+                                        left_owner, right_owner, coverage_owner, restore});
+                            });
                     };
-
-                    // These are independent complete-relation stages.  Their
-                    // calls are issued back-to-back and execute concurrently
-                    // on the distributed middle workers.
-                    auto left_owner = IncrementalOwnComposeInput(left.power);
-                    auto power_owner = need_power ? IncrementalOwnComposeInput(right.power) : nullptr;
-                    auto closure_owner = IncrementalOwnComposeInput(right.closure);
-                    if (IncrementalOwnerInputViewsEnabled() && split.first == split.second)
-                        context->coverage_owner = make_shared<RelationRows>(std::move(context->left_closure));
-                    const auto& lhs = left_owner ? *left_owner : left.power;
-                    const auto& rhs_power = power_owner ? *power_owner : right.power;
-                    const auto& rhs_closure = closure_owner ? *closure_owner : right.closure;
-                    if (need_power) {
-                        IncrementalStartGlobalRelationCompose(
-                            state, query_id, body_id,
-                            IncrementalGlobalBoundedChildKey(stage_key, 0x23),
-                            lhs, rhs_power,
-                            [context, finish](RelationRows power) mutable {
-                                {
-                                    lock_guard<mutex> lk(context->mu);
-                                    context->power = std::move(power);
-                                }
-                                finish();
-                            }, nullptr, IncrementalComposeInputOwners{left_owner, power_owner, nullptr});
+                    if (!need_power) {
+                        compose_delta();
+                        return;
                     }
-                    // Coverage belongs only to the dual-state doubling rule
-                    // S_i union (P_i o S_i). Non-symmetric addition-chain
-                    // combines S_a union (P_a o S_b) with different states.
-                    IncrementalStartGlobalRelationCompose(
-                        state, query_id, body_id,
-                        IncrementalGlobalBoundedChildKey(stage_key, 0x24),
-                        lhs, rhs_closure,
-                        [context, finish](RelationRows shifted) mutable {
-                            {
-                                lock_guard<mutex> lk(context->mu);
-                                context->shifted = std::move(shifted);
+                    // S_a P_b = P_(a+b) U (S_a - P_a) P_b. Only build
+                    // P_(a+b) here when the mirror schedule already needs it.
+                    RelationDstSet power_sources = sources;
+                    IncrementalGlobalBuildExactRelation(
+                        state, query_id, body_id, depth, std::move(power_sources),
+                        IncrementalGlobalBoundedChildKey(stage_key, 0x63),
+                        [context, compose_delta = std::move(compose_delta)](
+                            RelationRows power) mutable {
+                            context->power = std::move(power);
+                            IncrementalMergeRows(context->closure, context->power);
+                            for (auto row = context->left.begin(); row != context->left.end();) {
+                                auto exact = context->left_power.find(row->first);
+                                if (exact != context->left_power.end()) row->second.bitmap -= exact->second.bitmap;
+                                if (row->second.empty()) row = context->left.erase(row);
+                                else ++row;
                             }
-                            finish();
-                        },
-                        split.first == split.second
-                            ? (context->coverage_owner ? context->coverage_owner.get() : &context->left_closure)
-                            : nullptr,
-                        IncrementalComposeInputOwners{left_owner, closure_owner, context->coverage_owner, helper_restore});
-                }, complete_cache);
-        }, complete_cache);
+                            context->left_power.clear();
+                            compose_delta();
+                        });
+                }, complete_cache, required_powers);
+        }, complete_cache, required_powers);
 }
 
 static void IncrementalEvaluateGlobalBoundedRelation(

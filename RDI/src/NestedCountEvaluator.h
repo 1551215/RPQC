@@ -48,6 +48,8 @@ private:
 		const VertexSet& sources, Relation& result);
 	void evaluate_bounded_stage(const std::shared_ptr<Regex>& body, int length,
 		const VertexSet& sources, Relation& power, Relation& closure);
+	void evaluate_mirror_bounded_suffix(const std::shared_ptr<Regex>& body, int length,
+		const VertexSet& sources, const std::unordered_set<int>& required_powers, Relation& result);
 	void evaluate_range(const std::shared_ptr<Regex>& body, int min_rep,
 		int max_rep, const VertexSet& sources, Relation& result);
 	void evaluate_open_range(const std::shared_ptr<Regex>& body, int min_rep,

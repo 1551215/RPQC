@@ -21,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('binary', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--compose-mode', choices=['gcnp', 'plain'], default='gcnp')
+    parser.add_argument('--bounded-recurrence', choices=['mirror', 'original'], default='mirror')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -50,7 +52,9 @@ def main():
 
     cases = []
     for text, body in [('0', a), ('0/1', compose(a, b)), ('0|1', a | b)]:
-        for lower, upper in [(2, 2), (4, 4), (48, 48), (2, 4), (2, None)]:
+        for lower, upper in [(2, 2), (4, 4), (48, 48), (2, 4), (2, None),
+                             (0, 0), (0, 1), (0, 5), (1, 3), (1, 8),
+                             (2, 16), (2, 64), (3, 11), (4, 7)]:
             bound = str(lower) if upper == lower else f'{lower},{"" if upper is None else upper}'
             cases.append((f'({text}){{{bound}}}', counted(body, lower, upper)))
     for k in (2, 4):
@@ -64,6 +68,25 @@ def main():
     cases.extend([('1/(0){2,}', compose(b, counted(a, 2, None))),
                   ('(0){2,}/1', compose(counted(a, 2, None), b)),
                   ('(0){2}/(1){2}/0', compose(compose(power(a, 2), power(b, 2)), a))])
+    nested_bounded_cases = []
+    for text, body in [('0', a), ('0/1', compose(a, b)), ('0|1', a | b)]:
+        for upper in (8, 16, 48):
+            expression, relation = f'({text}){{2,{upper}}}', counted(body, 2, upper)
+            for depth in range(2, 6):
+                expression = f'({expression}){{2,{upper}}}'
+                relation = counted(relation, 2, upper)
+                nested_bounded_cases.append(len(cases) + 1)
+                cases.append((expression, relation))
+    cases.extend([
+        ('((0){2}){2}/(1){2}', compose(power(power(a, 2), 2), power(b, 2))),
+        ('((0){2}){3}/(1){2}', compose(power(power(a, 2), 3), power(b, 2))),
+        ('((0){2,4}){2,3}/(1){2,4}',
+         compose(counted(counted(a, 2, 4), 2, 3), counted(b, 2, 4))),
+        ('(1){2}/((0){0,3}){1,4}',
+         compose(power(b, 2), counted(counted(a, 0, 3), 1, 4))),
+        ('((0|1){1,3}){2,5}|((0/1){0,2}){1,4}',
+         counted(counted(a | b, 1, 3), 2, 5) | counted(counted(compose(a, b), 0, 2), 1, 4)),
+    ])
     with tempfile.TemporaryDirectory(prefix='rpq-bitmap-oracle-', dir='/tmp') as tmp:
         root = Path(tmp)
         (root/'vertices.txt').write_text(''.join(f'{v}\n' for v in range(8)))
@@ -71,13 +94,18 @@ def main():
         (root/'queries.txt').write_text(''.join(expr+'\n' for expr, _ in cases))
         for export in ('1', '0'):
             logs = output / ('pairs' if export == '1' else 'count-only')
-            env = dict(os.environ, GCNP_MODE='gcnp', GCNP_THREADS='1',
+            env = dict(os.environ, GCNP_MODE=args.compose_mode, GCNP_THREADS='1',
                        GCNP_COVERAGE_THREADS='1', QUERY_VARIANT_POLICY='forced',
                        RUN_VARIANT_NAME='gcnp', BOUNDED_SUFFIX_MODE='dual_state',
                        BLPC_HYBRID_EVAL_MODE='macro', RDI_TRACE_UNIONS='1',
                        RDI_EXPORT_PAIRS=export, QUERY_OUTPUT_ROOT=str(logs),
                        QUERY_START_INDEX='1', QUERY_END_INDEX=str(len(cases)),
                        QUERY_TIMEOUT_SECONDS='30')
+            env.pop('DUAL_STATE_DELTA_MODE', None)
+            env.pop('DUAL_STATE_DELTA_IMPL', None)
+            env.pop('DUAL_STATE_DELTA_TRACE', None)
+            if args.bounded_recurrence == 'original':
+                env['DUAL_STATE_DELTA_MODE'] = 'off'
             with (output/f'runner-export{export}.log').open('w') as stream:
                 subprocess.run([str(args.binary.resolve()), str(root/'vertices.txt'),
                                 str(root/'edges.txt'), str(root/'queries.txt')],
@@ -85,6 +113,9 @@ def main():
                                check=True, timeout=120)
             for q, (expression, expected) in enumerate(cases, 1):
                 leaf = logs / f'q{q}' / 'gcnp'
+                status = dict(line.split('=', 1) for line in (leaf/'status.txt').read_text().splitlines()
+                              if '=' in line)
+                assert status['status'] == 'SUCCESS' and status['expression'] == expression, status
                 match = re.search(r'result num:(\d+)', (leaf/'run.log').read_text())
                 assert match and int(match[1]) == len(expected), (q, expression, match, len(expected))
                 if export == '1':
@@ -92,8 +123,15 @@ def main():
                     assert actual == expected, (q, expression, actual ^ expected)
                 else:
                     assert not (leaf/'pairs.u32le').exists()
+            has_mirror = any('MIRROR_' in path.read_text()
+                             for path in logs.glob('q*/gcnp/stage_detail.csv'))
+            assert has_mirror == (args.bounded_recurrence == 'mirror'), 'Unexpected suffix recurrence'
+            nested_mirror = all('[NestedCount][mirror]' in
+                                (logs/f'q{q}/gcnp/run.log').read_text() for q in nested_bounded_cases)
+            assert nested_mirror == (args.bounded_recurrence == 'mirror'), 'Unexpected nested suffix recurrence'
     result = dict(status='PASS', queries=len(cases), modes=['complete-pair-set', 'count-only'],
-                  binary=str(args.binary.resolve()), expressions=[expr for expr, _ in cases])
+                  binary=str(args.binary.resolve()), compose_mode=args.compose_mode,
+                  bounded_recurrence=args.bounded_recurrence, expressions=[expr for expr, _ in cases])
     (output/'summary.json').write_text(json.dumps(result, indent=2)+'\n')
     print(json.dumps(result))
 

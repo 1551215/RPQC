@@ -4,6 +4,14 @@ The distributed implementation runs one worker per graph partition and a
 coordinator for each query. It retains GCNP, source work balancing, coverage,
 and Biclique + Residual message compression.
 
+Bounded counting uses mirror dual-state by default: with `P_k = A^k` and
+`S_k = I union A union ... union A^k`, it computes
+`S_(a+b) = S_b union S_a P_b`. When the exact power is already required by
+the mirror schedule, it reuses `P_(a+b)` and joins `(S_a minus P_a)` with
+`P_b`. Suffix states stay on the original source domain; exact-power requests
+expand to the needed mids. Every worker participates in each stage, including
+empty inputs. Results retain their existing hash-based source homes.
+
 ## Build
 
 Requires GCC, a C++17-capable G++ compiler, POSIX threads, and zlib development

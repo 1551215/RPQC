@@ -46,11 +46,17 @@ BOUNDED_SUFFIX_MODE=dual_state BLPC_HYBRID_EVAL_MODE=macro \
   /tmp/rpqc-queries/core18/sf1.txt
 ```
 
-This runs one GCNP variant per query, with dual-state bounded evaluation and
+This runs one GCNP variant per query, with mirror dual-state bounded evaluation and
 macro evaluation for composite expressions. To run Plain, set `GCNP_MODE=plain`
 and `RUN_VARIANT_NAME=plain` in the same command. Other dataset inputs are
 `core18/dbpedia.txt`, `core18/yago253.txt`, and `core18/sf3.txt`; robustness
 inputs are under `robustness/` in the generated directory.
+
+Mirror is the default single-machine dual-state suffix recurrence, including
+bounded operators inside nested and composite expressions, so no additional
+flags are needed. Plain uses the same mirror recurrence.
+`DUAL_STATE_DELTA_MODE=off` selects the original suffix recurrence for
+comparison; see [RDI/README.md](RDI/README.md) for details.
 
 Results are written under `query_logs/` and `batch_summary.txt` in the current
 working directory. Predicate IDs must use the same encoding as the bundled
@@ -70,6 +76,10 @@ This produces `build/bin/worker`, `build/bin/coordinator`, and
 [distribute/README.md](distribute/README.md) for partitioning and execution.
 
 ## Start the Distributed Implementation
+
+Distributed bounded counting also uses mirror dual-state by default; no
+additional runtime flags are needed. Its recurrence is described in
+[distribute/README.md](distribute/README.md).
 
 First create the partition directory from an existing METIS vertex-to-partition
 mapping. The mapping file contains `vertex partition` pairs; the following
