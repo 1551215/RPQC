@@ -138,14 +138,12 @@ struct QueryVariant {
 	string hybrid_eval_mode;
 };
 
-static vector<QueryVariant> QueryVariantsFor(
-	int query_index, bool gcnp_enabled)
+static vector<QueryVariant> QueryVariantsFor()
 {
 	const string default_suffix = "dual_state";
 	const string default_hybrid = "macro";
 	vector<QueryVariant> variants;
-	// Batch experiments can request exactly the configuration supplied through
-	// the environment, bypassing the historical query-index ablation matrix.
+	// Explicit experiment settings remain available; normal runs use one configuration.
 	const char* variant_policy = getenv("QUERY_VARIANT_POLICY");
 	if (variant_policy != nullptr && std::strcmp(variant_policy, "forced") == 0) {
 		const char* suffix_mode = getenv("BOUNDED_SUFFIX_MODE");
@@ -158,21 +156,7 @@ static vector<QueryVariant> QueryVariantsFor(
 		});
 		return variants;
 	}
-	if (!gcnp_enabled) {
-		variants.push_back({"dual_state_macro", default_suffix, default_hybrid});
-		return variants;
-	}
-	if (query_index >= 13 && query_index <= 14) {
-		variants.push_back({"dual_state_macro", default_suffix, default_hybrid});
-		variants.push_back({"naive_bounded_macro", "naive_union", default_hybrid});
-		return variants;
-	}
-	if (query_index >= 17 && query_index <= 21) {
-		variants.push_back({"dual_state_macro", default_suffix, default_hybrid});
-		variants.push_back({"dual_state_materialize", default_suffix, "materialize"});
-		return variants;
-	}
-	variants.push_back({"dual_state_macro", default_suffix, default_hybrid});
+	variants.push_back({"gcnp", default_suffix, default_hybrid});
 	return variants;
 }
 
@@ -400,11 +384,7 @@ int main(int argc,char* argv[])
 			break;
 		}
 		cout << "\n[Expression #" << exp_count << "] " << exp << endl;
-		const bool gcnp_enabled = [] {
-			const char* value = getenv("GCNP_MODE");
-			return value == nullptr || std::strcmp(value, "plain") != 0;
-		}();
-		const vector<QueryVariant> variants = QueryVariantsFor(exp_count, gcnp_enabled);
+		const vector<QueryVariant> variants = QueryVariantsFor();
 		for (const QueryVariant& variant : variants) {
 			const string query_id = "q" + to_string(exp_count) + "_" + variant.name;
 			const string query_dir = query_output_root + "/q" +
